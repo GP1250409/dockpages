@@ -4,6 +4,7 @@
 #import <objc/runtime.h>
 #import <os/log.h>
 #import <dlfcn.h>
+#import <objc/message.h>
 
 #define NOTIFY_CHANGED "cc.gonepaul.dockpages/changed"
 #define MAX_EXTRA 3
@@ -62,7 +63,7 @@ static void LaunchApp(NSString *bid) {
 @property (nonatomic, strong) CADisplayLink *link;
 @property (nonatomic) CGFloat target;
 @property (nonatomic) CGFloat velocity;
-@property (nonatomic, copy) NSArray *builtKey;
+@property (nonatomic, copy) id builtKey;
 - (void)attachTo:(UIView *)dock list:(UIView *)list;
 - (void)layoutPages;
 - (void)syncWithHome:(CGFloat)homePage;
@@ -91,26 +92,55 @@ static DPController *gCtl = nil;
     if (self.clip.superview != dock) [dock addSubview:self.clip];
 }
 
-- (void)rebuild {
+- (NSArray<NSValue *> *)slotCenters:(CGFloat *)sizeOut {
+    // Use the real system dock icon positions; fall back to an even 4-slot grid.
+    NSMutableArray<UIView *> *icons = [NSMutableArray array];
+    Class iv = NSClassFromString(@"SBIconView");
+    for (UIView *v in self.iconList.subviews) if (iv && [v isKindOfClass:iv]) [icons addObject:v];
+    CGFloat w = self.dock.bounds.size.width;
+    CGFloat size = 60, cy = self.dock.bounds.size.height / 2;
+    NSMutableArray *out = [NSMutableArray array];
+    if (icons.count >= 1) {
+        UIView *first = icons.firstObject;
+        UIView *img = [first respondsToSelector:NSSelectorFromString(@"iconImageView")] ? [first valueForKey:@"iconImageView"] : nil;
+        if (img && img.bounds.size.width > 20) size = img.bounds.size.width;
+        CGPoint c = [self.dock convertPoint:first.center fromView:self.iconList];
+        cy = c.y;
+        if (img) { CGPoint ic = [self.dock convertPoint:img.center fromView:img.superview]; cy = ic.y; }
+    }
+    CGFloat margin = 15, slot = (w - margin * 2) / PER_PAGE;
+    if (icons.count >= PER_PAGE) {
+        NSArray *sorted = [icons sortedArrayUsingComparator:^NSComparisonResult(UIView *x, UIView *y) {
+            return [@(x.center.x) compare:@(y.center.x)];
+        }];
+        for (NSUInteger i = 0; i < PER_PAGE; i++) {
+            CGPoint c = [self.dock convertPoint:[sorted[i] center] fromView:self.iconList];
+            [out addObject:[NSValue valueWithCGPoint:CGPointMake(c.x - self.iconList.transform.tx, cy)]];
+        }
+    } else {
+        for (NSUInteger i = 0; i < PER_PAGE; i++) [out addObject:[NSValue valueWithCGPoint:CGPointMake(margin + slot * (i + 0.5), cy)]];
+    }
+    if (sizeOut) *sizeOut = size;
+    return out;
+}
+
+- (void)rebuildWithCenters:(NSArray<NSValue *> *)centers size:(CGFloat)icon {
     for (UIView *v in self.pageViews) [v removeFromSuperview];
     [self.pageViews removeAllObjects];
-    CGRect lb = self.iconList.frame;
     CGFloat w = self.dock.bounds.size.width;
-    CGFloat icon = 60;
-    CGFloat sp = (lb.size.width - icon * PER_PAGE) / (PER_PAGE + 1);
-    if (sp < 4) sp = 4;
-    CGFloat y = lb.origin.y + (lb.size.height - icon) / 2;
     for (NSArray *apps in gPages) {
         UIView *pv = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, self.dock.bounds.size.height)];
         pv.backgroundColor = UIColor.clearColor;
         NSUInteger i = 0;
         for (NSString *bid in apps) {
+            if (i >= centers.count) break;
+            CGPoint c = [centers[i] CGPointValue];
             UIImage *img = [UIImage _applicationIconImageForBundleIdentifier:bid format:2 scale:UIScreen.mainScreen.scale];
             UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
-            b.frame = CGRectMake(lb.origin.x + sp + i * (icon + sp), y, icon, icon);
+            b.frame = CGRectMake(0, 0, icon, icon);
+            b.center = c;
             [b setImage:img forState:UIControlStateNormal];
-            b.imageView.layer.cornerRadius = 13.5;
-            b.imageView.layer.cornerCurve = kCACornerCurveContinuous;
+            b.imageView.contentMode = UIViewContentModeScaleAspectFit;
             b.accessibilityIdentifier = bid;
             [b addTarget:self action:@selector(tapped:) forControlEvents:UIControlEventTouchUpInside];
             [pv addSubview:b];
@@ -119,8 +149,6 @@ static DPController *gCtl = nil;
         [self.clip addSubview:pv];
         [self.pageViews addObject:pv];
     }
-    self.builtKey = [gPages copy];
-    LOG("rebuilt %lu extra pages", (unsigned long)gPages.count);
 }
 
 - (void)tapped:(UIButton *)b {
@@ -131,7 +159,14 @@ static DPController *gCtl = nil;
 - (void)layoutPages {
     if (!self.dock) return;
     self.clip.frame = self.dock.bounds;
-    if (![self.builtKey isEqual:gPages]) [self rebuild];
+    CGFloat size = 60;
+    NSArray *centers = [self slotCenters:&size];
+    NSString *geom = [NSString stringWithFormat:@"%@|%@|%.1f|%.1f", gPages, centers, size, self.dock.bounds.size.width];
+    if (![self.builtKey isEqual:geom]) {
+        [self rebuildWithCenters:centers size:size];
+        self.builtKey = geom;
+        LOG("rebuilt %lu extra pages, icon %.0f, dock %{public}@, list %{public}@, p=%.2f", (unsigned long)gPages.count, size, NSStringFromCGRect(self.dock.bounds), NSStringFromCGRect(self.iconList.frame), self.position);
+    }
     CGFloat n = (CGFloat)([self pageCount] - 1);
     if (self.position > n) self.position = n;
     [self applyPosition];
@@ -141,8 +176,11 @@ static DPController *gCtl = nil;
     CGFloat w = self.dock.bounds.size.width;
     CGFloat p = self.position;
     self.iconList.transform = CGAffineTransformMakeTranslation(-p * w, 0);
+    CGFloat la = 1 - p; if (la < 0) la = 0; if (la > 1) la = 1;
+    self.iconList.alpha = la;
     for (NSUInteger i = 0; i < self.pageViews.count; i++) {
         self.pageViews[i].frame = CGRectMake(((CGFloat)(i + 1) - p) * w, 0, w, self.dock.bounds.size.height);
+        self.pageViews[i].hidden = fabs((CGFloat)(i + 1) - p) >= 1.0;
     }
     self.clip.hidden = (gPages.count == 0);
 }
@@ -230,20 +268,30 @@ static void new_layoutSubviews(UIView *self, SEL _cmd) {
     [gCtl layoutPages];
 }
 
+static CGFloat HomePage(id folder, UIScrollView *sv) {
+    CGFloat w = sv.bounds.size.width;
+    if (w <= 0) return 0;
+    CGFloat page = sv.contentOffset.x / w;
+    SEL sel = NSSelectorFromString(@"firstIconPageIndex");
+    if ([folder respondsToSelector:sel]) {
+        NSInteger first = ((NSInteger (*)(id, SEL))objc_msgSend)(folder, sel);
+        if (first > 0 && first < 10) page -= (CGFloat)first;
+    }
+    return page;
+}
+
 static void (*orig_scroll)(id, SEL, UIScrollView *);
 static void new_scroll(id self, SEL _cmd, UIScrollView *sv) {
     orig_scroll(self, _cmd, sv);
     if (!gCtl || ![self isKindOfClass:NSClassFromString(@"SBRootFolderView")]) return;
-    CGFloat w = sv.bounds.size.width;
-    if (w > 0) [gCtl syncWithHome:sv.contentOffset.x / w];
+    [gCtl syncWithHome:HomePage(self, sv)];
 }
 
 static void (*orig_end)(id, SEL, UIScrollView *);
 static void new_end(id self, SEL _cmd, UIScrollView *sv) {
     orig_end(self, _cmd, sv);
     if (!gCtl || ![self isKindOfClass:NSClassFromString(@"SBRootFolderView")]) return;
-    CGFloat w = sv.bounds.size.width;
-    if (w > 0) [gCtl homeSettled:sv.contentOffset.x / w];
+    [gCtl homeSettled:HomePage(self, sv)];
 }
 
 static void hook(Class c, SEL s, IMP n, IMP *o) {

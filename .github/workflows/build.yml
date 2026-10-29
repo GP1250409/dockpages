@@ -1,0 +1,19 @@
+name: build
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          set -eux
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p out
+          CF="-arch arm64e -arch arm64 -isysroot $SDK -miphoneos-version-min=15.0 -fobjc-arc -O2 -Wall -Wno-deprecated-declarations -Wno-unused-parameter"
+          xcrun clang $CF -dynamiclib -framework UIKit -framework Foundation -framework QuartzCore tweak/Tweak.m -o out/DockPages.dylib -install_name /Library/MobileSubstrate/DynamicLibraries/DockPages.dylib
+          xcrun clang $CF -Iprefs -bundle -framework UIKit -framework Foundation -F$SDK/System/Library/PrivateFrameworks -framework Preferences prefs/DockPagesPrefs.m -o out/DockPagesPrefs
+          lipo -info out/DockPages.dylib out/DockPagesPrefs
+          otool -hv out/DockPages.dylib
+      - uses: actions/upload-artifact@v4
+        with: { name: dockpages, path: out/ }

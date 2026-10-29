@@ -1,0 +1,10 @@
+Package: cc.gonepaul.dockpages
+Name: DockPages
+Version: 0.1.0
+Architecture: iphoneos-arm64e
+Description: Multi-page Dock: up to 3 extra pages x 4 apps, swipe to flip, optional follow home page.
+Maintainer: GP1250409
+Author: GP1250409
+Section: Tweaks
+Depends: firmware (>= 16.0), mobilesubstrate, preferenceloader
+Conflicts: wiki.qaq.dockflip

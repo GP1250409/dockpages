@@ -1,3 +1,4 @@
+#pragma once
 #import <UIKit/UIKit.h>
 typedef NS_ENUM(NSInteger, PSCellType) { PSGroupCell, PSLinkCell, PSLinkListCell, PSListItemCell, PSTitleValueCell, PSSliderCell, PSSwitchCell, PSStaticTextCell, PSEditTextCell, PSSecureEditTextCell, PSButtonCell };
 @interface PSSpecifier : NSObject {
